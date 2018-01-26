@@ -17,7 +17,7 @@
     <version>0.1.0-SNAPSHOT</version>
 	
 	<name>FFmpeg_FrameRecorder.jar</name>
-	<description>Saves a stack as compressed video file using FFmpeg librarry. ImageJ plugin.</description>
+	<description>Saves a stack as compressed video file using FFmpeg library. ImageJ plugin.</description>
 	<url>http://imagej.net/PhotoBend</url>
 	<inceptionYear>2018</inceptionYear>
 	 <organization>

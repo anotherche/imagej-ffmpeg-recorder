@@ -10,7 +10,7 @@ cache:
   directories:
   - "~/.m2/repository"
   before_install:
-  - chmod +x build.sh
+  - chmod +x .travis/build.sh
 env:
   global:
     secure: mC2zKv8jsHsAeqxwwSDJSN6eogQ2L3mlso1QVGi7xycsh/qjHxBGIzgFiQQrJlnuChk6JmebkgUe28kkcp3dybb1VHWM3et8wpxOvcH4Kl6bvNmcGFvJ2JbgoPolQowrgSBNm+kmymZLfyovxA87Oxqy/omaiKzhYs4Lq85izKEN37owRQb4DeEmUH4GX92Y6AUSddWG0Zgm4yTl3S7OntEJZPrRM/UMEKVKlL/aw761xMA24p5tDLC8L7kPAAV+tMG/79jgQcuhO2TG5zAcHSnU9vUPQEPWdxVdiNweZoIK9JhVoUf9fMZjnyCpK07MIFvVpNE9xiHsEn1+SLLWrE89IaeSf3NDVRpd9m1z0SSbEeFXBuFpao/DKEjr33hhGEqc+cbWJCstRmEzoov9opxieKPk5ZeaCVP0XJBHcAfNhgRjdhgfYjZlTWpgOr2K3xGFbTVVD/2SQGeTpAVzLJDEsfQ63c58xRI1DGss0ivJlRRS7vKAQepFsh1K7eKl9MMwe+xj3WwQDlRZHNrb3fsCQ2BNSqHS9TNd8Tv92L/r4A6vusqD2hQkzxtoqZuMkKc2oVysbIYYX9yv71ZMviYdXDsLYgjwi/u5zN58RxH4E+pcUsPIitV56McE28Y7V5nnEDih8ZOyD59BRz2YPugPcj3nDtb9WLPIdaUbx14=

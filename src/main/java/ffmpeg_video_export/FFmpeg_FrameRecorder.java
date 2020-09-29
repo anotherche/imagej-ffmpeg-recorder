@@ -1,15 +1,14 @@
 package ffmpeg_video_export;
 
-
-import org.bytedeco.javacpp.avcodec;
-import org.bytedeco.javacpp.avutil;
-import org.bytedeco.javacv.FFmpegFrameRecorder;
-import org.bytedeco.javacv.Frame;
-import org.bytedeco.javacv.FrameRecorder;
-import org.bytedeco.javacv.FrameRecorder.Exception;
-import org.bytedeco.javacv.Java2DFrameConverter;
-import static org.bytedeco.javacpp.avutil.*;
-import static org.bytedeco.javacpp.avformat.*;
+import ij.IJ;
+import ij.ImagePlus;
+import ij.ImageStack;
+import ij.Menus;
+import ij.gui.GenericDialog;
+import ij.io.SaveDialog;
+import ij.plugin.CanvasResizer;
+import ij.plugin.filter.PlugInFilter;
+import ij.process.ImageProcessor;
 
 import java.awt.Button;
 import java.awt.Dimension;
@@ -20,27 +19,35 @@ import java.awt.Panel;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.io.File;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.Hashtable;
+
 import javax.swing.JScrollPane;
 import javax.swing.JTable;
 import javax.swing.table.DefaultTableModel;
 
-import ij.IJ;
-import ij.ImagePlus;
-import ij.ImageStack;
-import ij.gui.GenericDialog;
-import ij.io.SaveDialog;
-import ij.plugin.CanvasResizer;
-import ij.plugin.filter.PlugInFilter;
-import ij.process.ImageProcessor;
+
+
+//import org.bytedeco.ffmpeg.global.avutil;
+import org.bytedeco.javacv.FFmpegFrameRecorder;
+import org.bytedeco.javacv.Frame;
+//import org.bytedeco.javacv.FrameRecorder;
+//import org.bytedeco.javacv.FrameRecorder.Exception;
+import org.bytedeco.javacv.Java2DFrameConverter;
+import static org.bytedeco.ffmpeg.global.avutil.*;
+import static org.bytedeco.ffmpeg.global.avformat.*;
+import static org.bytedeco.ffmpeg.global.avcodec.*;
+import org.bytedeco.ffmpeg.avformat.AVOutputFormat;
+
 
 
 public class FFmpeg_FrameRecorder implements AutoCloseable, PlugInFilter {
 	
 	private String filePath;
 		
-	private Java2DFrameConverter converter;
-	private FFmpegFrameRecorder recorder;
+	
 	private int firstSlice, lastSlice;
 	private int frameWidth, videoWidth, desiredWidth;
 	private int frameHeight, videoHeight, frameHeightBorder=0;
@@ -61,21 +68,27 @@ public class FFmpeg_FrameRecorder implements AutoCloseable, PlugInFilter {
 	private	boolean initialized = false;
 	
 	private Frame frame_ARGB;
+	private Java2DFrameConverter converter;
+	private FFmpegFrameRecorder recorder;
 	
 	private static final String[] formats = new String[] {"guess by file extension", "avi", "mov", "mp4", "mkv"};
-	private static final String[] encoders = new String[] {"by format", "mpeg4", "h264", "mjpeg", "huffyuv", "custom"};
+	private static final String[] encoders = new String[] {"by format", "mpeg4", "h264", "h265", "mjpeg", "huffyuv", "custom"};
+	private static final int[] encCodes = new int[] {AV_CODEC_ID_NONE, AV_CODEC_ID_MPEG4, AV_CODEC_ID_H264, 
+													AV_CODEC_ID_H265, AV_CODEC_ID_MJPEG, AV_CODEC_ID_HUFFYUV, -1};
 	
-
-
+	
+	
 	
 	public int setup(String arg, ImagePlus imp) {
     	this.imp = imp;
         return DOES_ALL + STACK_REQUIRED + NO_CHANGES;
 	}
 
-	
+	@Override
 	public void run(ImageProcessor ip) {
-
+		
+		if (!CheckJavaCV("ffmpeg")) return;
+		
 		stack = imp.getStack();
 		ip.convertToRGB();
 		SaveDialog	sd = new SaveDialog("Save Video File As", "videofile", ".avi" );
@@ -92,8 +105,246 @@ public class FFmpeg_FrameRecorder implements AutoCloseable, PlugInFilter {
 		
 	}
 	
+	private boolean CheckJavaCV(String components) {
+		String javaCVInstallCommand = "Install JavaCV libraries";
+    	Hashtable table = Menus.getCommands();
+		String javaCVInstallClassName = (String)table.get(javaCVInstallCommand);
+		if (javaCVInstallClassName.endsWith("\")")) {
+			int argStart = javaCVInstallClassName.lastIndexOf("(\"");
+			if (argStart>0) {
+				javaCVInstallClassName = javaCVInstallClassName.substring(0, argStart);
+			}
+		}
+		String javaCVInstallNotFound = "JavaCV install plugin is not found. Will try to run without JavaCV installation check.";
+		boolean doRestart = false;
+		if (javaCVInstallClassName!=null) {
+			
+			try {
+				Class c = Class.forName(javaCVInstallClassName);
+				Field restartRequired = c.getField("restartRequired");
+				doRestart = (boolean)restartRequired.get(null);
+				if (doRestart){
+					IJ.showMessage("ImageJ was not restarted after JavaCV installation!");
+					return false;
+				}
+				Method mCheckJavaCV = c.getMethod("CheckJavaCV", String.class, boolean.class, boolean.class);
+				mCheckJavaCV.invoke(null, components, false, false);
+				doRestart = (boolean)restartRequired.get(null);
+				if (doRestart){
+					return false;
+				}
+			} 
+			catch (Exception e) {
+				IJ.log(javaCVInstallNotFound);
+				return true;
+			}
+		}
+		else {
+			IJ.log(javaCVInstallNotFound);
+		}
+		return true;
+	}
 	
-	String getFileExtension(String path) {
+	/** Parameters dialog, returns false on cancel */
+	private boolean showDialog () {
+
+		//Integer videoOptions = new Integer(0);
+		final GenericDialog gd = new GenericDialog("AVI Recorder");
+		gd.addMessage("Instruction: 1. Select slices to encode. 2. Set width of the output video.\n"+
+						"Output heigth will be scaled proportional (both dimensions will be aligned to 8 pixels)\n"+
+						"3. Specify frame rate in frames per second 4. Specify bitrate of the compressed video (in kbps).\n"+
+						"Set zero for automatic configuration by ffmpeg. 4. Select output format and video encoder. \n"+
+						"Default is determined by the format. Select \"custom\" to specify own.\n"+
+						"5. Optionally specify additional encoder settings.\n"+
+						"Remember that not all format/encoder combinations are supported by players.");
+		gd.addNumericField("First slice", 1, 0);
+		gd.addNumericField("Last slice", stack.getSize(), 0);
+		//gd.addMessage("Set width of the output video.\n"+
+		//				"Output heigth will be scaled proportional\n"+
+		//				"(both dimensions will be aligned to 8 pixels)");
+		gd.addNumericField("Video frame width" , frameWidth, 0);
+		//gd.addMessage("Specify frame rate in frames per second");
+		gd.addNumericField("Frame rate" , 25.0, 3);
+		
+		//gd.addMessage("Specify bitrate of the compressed video (in kbps).\n"+
+		//			  "Set zero for automatic configuration by ffmpeg");
+		int br = (int)((frameWidth*frameHeight*1024L)/614400L);
+		
+		gd.addNumericField("Video bitrate" , br<128?128:br, 0);
+		//gd.addMessage("Select output format.");
+		gd.addChoice("Format", formats, formats[0]);
+		//gd.addMessage("Select video encoder. Default is determined by the format.\n"
+		//		+ "Select \"custom\" to specify own.");
+		gd.addChoice("Encoder", encoders, encoders[0]);
+		gd.addStringField("Custom encoder", "");
+		gd.addCheckbox("Show progress by stack update (slows down the conversion)", false);
+		
+		//grid.
+		vcodecOptTab = null;
+		Button btn_vopt = new Button("Add encoder option");
+
+		final Panel optionsBtnPanel = new Panel();
+		GridBagLayout grid = (GridBagLayout)gd.getLayout();
+		GridBagConstraints c = new GridBagConstraints();
+		c.gridx = 2; c.gridy = 1;
+		c.gridwidth = 1;
+		c.gridheight = 1;
+		c.anchor = GridBagConstraints.WEST;
+		grid.setConstraints(optionsBtnPanel, c);
+		gd.add(optionsBtnPanel);
+		btn_vopt.addActionListener(new ActionListener() {
+
+			@Override
+			public void actionPerformed(ActionEvent e) {
+				if (vcodecOptTab == null) {
+					vcodecOptTab = new JTable(new DefaultTableModel(new Object[]{"Key", "Option"},1));
+					JScrollPane scrollPane = new JScrollPane(vcodecOptTab,
+                            JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED,
+                            JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
+					
+					GridBagLayout grid = (GridBagLayout)gd.getLayout();
+					GridBagConstraints c = new GridBagConstraints();
+					c.gridx = 2; c.gridy = 2;
+					c.gridwidth = 1;
+					c.gridheight = GridBagConstraints.REMAINDER ;
+					c.anchor = GridBagConstraints.NORTHWEST;
+					Panel optionsPanel = new Panel(new GridLayout());
+					optionsPanel.setPreferredSize(new Dimension(250,200));
+					grid.setConstraints(optionsPanel, c);
+					gd.add(optionsPanel);
+					
+					optionsPanel.add(scrollPane);
+					
+				} else {
+					
+					DefaultTableModel model = (DefaultTableModel) vcodecOptTab.getModel();
+					model.addRow(new Object[]{"", ""});
+				}
+				
+				gd.validate();
+       		 	gd.repaint();
+       		 	gd.pack();
+				
+			}
+			
+		});
+		optionsBtnPanel.add(btn_vopt);
+		gd.pack();
+		gd.setSmartRecording(true);
+		gd.showDialog();
+		if (gd.wasCanceled()) return false;
+		firstSlice = (int)Math.abs(gd.getNextNumber());
+		lastSlice = (int)Math.abs(gd.getNextNumber());
+		if (firstSlice<1) firstSlice=1;
+		if (lastSlice>stack.getSize()) lastSlice=stack.getSize();
+		if (lastSlice<=firstSlice) {
+			IJ.showMessage("Error", "Incorrect slice range");
+			return false;
+		}
+		desiredWidth=(int)Math.abs(gd.getNextNumber());
+		fps=Math.abs(gd.getNextNumber());
+		bitRate = (int)Math.abs(gd.getNextNumber())*1024;
+		formatCode = gd.getNextChoiceIndex();
+		codecCode= gd.getNextChoiceIndex();
+		customVEnc = gd.getNextString();
+		progressByStackUpdate = gd.getNextBoolean();
+		DefaultTableModel model = vcodecOptTab == null?null:(DefaultTableModel) vcodecOptTab.getModel();
+		vKeys = null;
+		vOptions = null;
+		if (model!=null) {
+			int row = vcodecOptTab.getEditingRow();
+			int col = vcodecOptTab.getEditingColumn();
+			if (row != -1 && col != -1)
+				vcodecOptTab.getCellEditor(row,col).stopCellEditing();
+			int rowCount = model.getRowCount();
+			if (rowCount>0) {
+				vKeys = new ArrayList<String>(rowCount);
+				vOptions = new ArrayList<String>(rowCount);
+
+				for (int i =0; i< rowCount; i++){
+					if (model.getValueAt(i, 0)!=null && !model.getValueAt(i, 0).toString().isEmpty()) {
+						vKeys.add(model.getValueAt(i, 0).toString());
+						if (model.getValueAt(i, 1)!=null && !model.getValueAt(i, 1).toString().isEmpty())
+							vOptions.add(model.getValueAt(i, 1).toString());
+						else vOptions.add(" ");
+					}
+					
+
+				}
+			}
+
+
+		}
+		
+
+		if (formatCode > 0 && !getFileExtension(filePath).toLowerCase().equals(formats[formatCode])) {
+			filePath = filePath.substring(0, filePath.lastIndexOf(getFileExtension(filePath)))+formats[formatCode];
+			File videofile = new File(filePath);
+			if(videofile.exists()) {
+				GenericDialog rewritedlg = new GenericDialog("File exists");
+				rewritedlg.setCancelLabel("NO");
+				rewritedlg.addMessage("The file with the selected extension ("+formats[formatCode]+") already exists. Overvrite?\n(pressing NO cancels encoding)");
+				rewritedlg.showDialog();
+				if (rewritedlg.wasCanceled()) return false;
+			}
+			else IJ.showMessage("Format warning", "Selected format mismatches file extension.\nThe extension will be replaced to "+formats[formatCode]);
+		}
+		
+			
+
+		IJ.register(this.getClass());
+		return true;
+	}
+	
+	/** Encodes a stack into a video with default and specified parameters 
+	 * frame dimensions are resized proportionally to give the desired width
+	 * The function uses standard working scheme:
+	 * 1. InitRecorder
+	 * 2. EncodeFrame in a cycle running through the specified stack range 
+	 * 3. StopRecorder
+	 *   @param path the path of the resulting video file
+	 *    
+	 */
+	public void RecordVideo(String path, ImagePlus imp, int desiredWidth, 
+			double frameRate, int bRate, int firstSlice, int lastSlice){
+		if (imp==null) return;
+
+		ImageStack stack = imp.getStack();
+		if (stack==null || stack.getSize() < 2 || stack.getProcessor(1)==null) {
+			IJ.log("Nothing to encode as video. Stack is required with at least 2 slices.");
+			initialized = false;
+			return;
+		}
+
+		if (firstSlice>lastSlice || firstSlice>stack.getSize()){
+			IJ.log("Incorrect slice range");
+			initialized = false;
+			return;
+		}
+
+		if (!InitRecorder(path, imp.getWidth(), imp.getHeight(), 
+				desiredWidth, frameRate, bRate, formatCode, codecCode, customVEnc, vKeys, vOptions)) return;
+
+		int start = firstSlice<0?1:firstSlice;
+		int finish = lastSlice>stack.getSize()?stack.getSize():lastSlice;
+
+		for (int i=start; i<finish+1; i++) {
+			EncodeFrame(stack.getProcessor(i));
+			IJ.showProgress((i-start+1.0)/(finish-start+1.0));
+			if (progressByStackUpdate) imp.setSlice(i);
+		}
+
+		try {
+			StopRecorder();
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+		IJ.log("The video encoding is complete. File path:\n"+path);
+
+	}
+	
+	
+	private String getFileExtension(String path) {
 		String extension = "";
 		if (path!=null && !path.isEmpty()){
 			int i = path.lastIndexOf('.');
@@ -243,31 +494,35 @@ public class FFmpeg_FrameRecorder implements AutoCloseable, PlugInFilter {
 		}
 
 		
-		int v_codec = avcodec.AV_CODEC_ID_NONE;
-		switch (codec_code) {
-			case 1: 
-				v_codec = avcodec.AV_CODEC_ID_MPEG4;
-				break;
-			case 2:
-				v_codec = avcodec.AV_CODEC_ID_H264;
-				break;
-			case 3:
-				v_codec = avcodec.AV_CODEC_ID_MJPEG;
-				break;
-			case 4:
-				v_codec = avcodec.AV_CODEC_ID_HUFFYUV;
-				break;
-			case 5:
-				v_codec = -1;
-				break;
-			
-		}
-		
+		int v_codec = encCodes[codec_code];
+//				AV_CODEC_ID_NONE;
+//		switch (codec_code) {
+//			case 1: 
+//				v_codec = AV_CODEC_ID_MPEG4;
+//				break;
+//			case 2:
+//				v_codec = AV_CODEC_ID_H264;
+//				break;
+//			case 3:
+//				v_codec = AV_CODEC_ID_H265;
+//				break;
+//			case 4:
+//				v_codec = AV_CODEC_ID_MJPEG;
+//				break;
+//			case 5:
+//				v_codec = AV_CODEC_ID_HUFFYUV;
+//				break;
+//			case 6:
+//				v_codec = -1;
+//				break;
+//			
+//		}
+//		
 		String vFmt = format_code == 0?getFileExtension(path).toLowerCase():formats[format_code];
 		
 		
 		return initialized = InitRecorder(path, videoWidth, videoHeight, 
-				avutil.AV_PIX_FMT_NONE, frameRate, bRate, v_codec, v_codec_custom, vFmt,
+				AV_PIX_FMT_NONE, frameRate, bRate, v_codec, v_codec_custom, vFmt,
 				0,  vKeys, vOptions);
 	}
 	
@@ -314,7 +569,7 @@ public class FFmpeg_FrameRecorder implements AutoCloseable, PlugInFilter {
     	videoHeight=vHeight + (vHeight%8==0?0:(8-vHeight%8));
     	
 		return initialized = InitRecorder(path, videoWidth, videoHeight, 
-				avutil.AV_PIX_FMT_NONE, frameRate, bRate, avcodec.AV_CODEC_ID_MPEG4, null, "avi",
+				AV_PIX_FMT_NONE, frameRate, bRate, AV_CODEC_ID_MPEG4, null, "avi",
 				10, null, null);
 	}
 	
@@ -341,7 +596,7 @@ public class FFmpeg_FrameRecorder implements AutoCloseable, PlugInFilter {
 		if (initialized) {
 			try {
 				close();
-			} catch (java.lang.Exception e) {
+			} catch (Exception e) {
 				e.printStackTrace();
 			}
 		}
@@ -378,7 +633,7 @@ public class FFmpeg_FrameRecorder implements AutoCloseable, PlugInFilter {
 		
 		recorder.setFormat(format_name);
 		
-		if (vcodec>avcodec.AV_CODEC_ID_NONE) recorder.setVideoCodec(vcodec);
+		if (vcodec>AV_CODEC_ID_NONE) recorder.setVideoCodec(vcodec);
 		else if (vcodec == -1) recorder.setVideoCodecName(vcodecName);
 		   //if (vcodecName!=null && !vcodecName.isEmpty()) recorder.setVideoCodecName(vcodecName);
 		else {
@@ -396,7 +651,7 @@ public class FFmpeg_FrameRecorder implements AutoCloseable, PlugInFilter {
 		
 		try {
 			recorder.start();
-		} catch (org.bytedeco.javacv.FrameRecorder.Exception e2) {
+		} catch (Exception e2) {
 			try {
 				initialized = false;
 				recorder.release();
@@ -416,13 +671,15 @@ public class FFmpeg_FrameRecorder implements AutoCloseable, PlugInFilter {
 	/** Stops record and releases resources.
 	 * Should be called at the end of record. 
 	 */
-	public void StopRecorder(){
-		try {
-			recorder.close();
-			initialized = false;
-		} catch (org.bytedeco.javacv.FrameRecorder.Exception e) {
-			e.printStackTrace();
-		}
+	public void StopRecorder() throws Exception {
+		recorder.close();
+		initialized = false;
+//		try {
+//			recorder.close();
+//			initialized = false;
+//		} catch (java.lang.Exception e){//org.bytedeco.javacv.FrameRecorder.Exception e) {
+//			e.printStackTrace();
+//		}
 	}
 	
 	
@@ -441,221 +698,23 @@ public class FFmpeg_FrameRecorder implements AutoCloseable, PlugInFilter {
 		try {
 			recorder.recordImage(frame_ARGB.imageWidth, frame_ARGB.imageHeight, Frame.DEPTH_UBYTE, 
 					4, frame_ARGB.imageStride, AV_PIX_FMT_ARGB, frame_ARGB.image);
-		} catch (org.bytedeco.javacv.FrameRecorder.Exception e1) {
+		} catch (Exception e1) {
 			e1.printStackTrace();
 		}
 	}
 	
 	
-	/** Encodes a stack into a video with default and specified parameters 
-	 * frame dimensions are resized proportionally to give the desired width
-	 * The function uses standard working scheme:
-	 * 1. InitRecorder
-	 * 2. EncodeFrame in a cycle running through the specified stack range 
-	 * 3. StopRecorder
-	 *   @param path the path of the resulting video file
-	 *    
-	 */
-	public void RecordVideo(String path, ImagePlus imp, int desiredWidth, 
-							double frameRate, int bRate, int firstSlice, int lastSlice){
-		if (imp==null) return;
-		
-		ImageStack stack = imp.getStack();
-		if (stack==null || stack.getSize() < 2 || stack.getProcessor(1)==null) {
-			IJ.log("Nothing to encode as video. Stack is required with at least 2 slices.");
-			initialized = false;
-			return;
-		}
-		
-		if (firstSlice>lastSlice || firstSlice>stack.getSize()){
-			IJ.log("Incorrect slice range");
-			initialized = false;
-			return;
-		}
-		
-		//if (!InitRecorder(path, imp, desiredWidth, frameRate, bRate)) return;
-		if (!InitRecorder(path, imp.getWidth(), imp.getHeight(), 
-				desiredWidth, frameRate, bRate, formatCode, codecCode, customVEnc, vKeys, vOptions)) return;
-		
-		int start = firstSlice<0?1:firstSlice;
-		int finish = lastSlice>stack.getSize()?stack.getSize():lastSlice;
-		
-		for (int i=start; i<finish+1; i++) {
-			EncodeFrame(stack.getProcessor(i));
-			IJ.showProgress((i-start+1.0)/(finish-start+1.0));
-			if (progressByStackUpdate) imp.setSlice(i);
-		}
-		
-		StopRecorder();
-		IJ.log("The video encoding is complete. File path:\n"+path);
-		
-	}
+	
 
 
-	/** Parameters dialog, returns false on cancel */
-	private boolean showDialog () {
 
-		Integer videoOptions = new Integer(0);
-		GenericDialog gd = new GenericDialog("AVI Recorder");
-		gd.addMessage("Select slices to encode.");
-		gd.addNumericField("First slice", 1, 0);
-		gd.addNumericField("Last slice", stack.getSize(), 0);
-		gd.addMessage("Set width of the output video.\n"+
-						"Output heigth will be scaled proportional\n"+
-						"(both dimensions will be aligned to 8 pixels)");
-		gd.addNumericField("Video frame width" , frameWidth, 0);
-		gd.addMessage("Specify frame rate in frames per second");
-		gd.addNumericField("Frame rate" , 25.0, 3);
-		gd.addMessage("Specify bitrate of the compressed video (in kbps).\n"+
-					  "Set zero for automatic configuration by ffmpeg");
-		int br = (int)((frameWidth*frameHeight*1024L)/614400L);
-		
-		gd.addNumericField("Video bitrate" , br<128?128:br, 0);
-		gd.addMessage("Select output format.");
-		gd.addChoice("Format", formats, formats[0]);
-		gd.addMessage("Select video encoder. Default is determined by the format.\n"
-				+ "Select \"custom\" to specify own.");
-		gd.addChoice("Encoder", encoders, encoders[0]);
-		gd.addStringField("Custom encoder", "");
-		gd.addCheckbox("Show progress by stack update (slows down the conversion)", false);
-		
-		//grid.
-		vcodecOptTab = null;
-		Button btn_vopt = new Button("Add encoder option");
-
-		final Panel optionsBtnPanel = new Panel();
-		GridBagLayout grid = (GridBagLayout)gd.getLayout();
-		GridBagConstraints c = new GridBagConstraints();
-		c.gridx = 2; c.gridy = 0;
-		c.gridwidth = 1;
-		c.gridheight = 1;
-		c.anchor = GridBagConstraints.WEST;
-		grid.setConstraints(optionsBtnPanel, c);
-		gd.add(optionsBtnPanel);
-		btn_vopt.addActionListener(new ActionListener() {
-
-			@Override
-			public void actionPerformed(ActionEvent e) {
-				if (vcodecOptTab == null) {
-					vcodecOptTab = new JTable(new DefaultTableModel(new Object[]{"Key", "Option"},1));
-					JScrollPane scrollPane = new JScrollPane(vcodecOptTab,
-                            JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED,
-                            JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
-					
-					GridBagLayout grid = (GridBagLayout)gd.getLayout();
-					GridBagConstraints c = new GridBagConstraints();
-					c.gridx = 2; c.gridy = 1;
-					c.gridwidth = 1;
-					c.gridheight = GridBagConstraints.REMAINDER ;
-					c.anchor = GridBagConstraints.NORTHWEST;
-					Panel optionsPanel = new Panel(new GridLayout());
-					optionsPanel.setPreferredSize(new Dimension(250,250));
-					grid.setConstraints(optionsPanel, c);
-					gd.add(optionsPanel);
-					
-					optionsPanel.add(scrollPane);
-					
-				} else {
-					
-					DefaultTableModel model = (DefaultTableModel) vcodecOptTab.getModel();
-					model.addRow(new Object[]{"", ""});
-				}
-				
-				gd.validate();
-       		 	gd.repaint();
-       		 	gd.pack();
-				
-			}
-			
-		});
-		optionsBtnPanel.add(btn_vopt);
-		gd.pack();
-		gd.setSmartRecording(true);
-		gd.showDialog();
-		if (gd.wasCanceled()) return false;
-		firstSlice = (int)Math.abs(gd.getNextNumber());
-		lastSlice = (int)Math.abs(gd.getNextNumber());
-		if (firstSlice<1) firstSlice=1;
-		if (lastSlice>stack.getSize()) lastSlice=stack.getSize();
-		if (lastSlice<=firstSlice) {
-			IJ.showMessage("Error", "Incorrect slice range");
-			return false;
-		}
-		desiredWidth=(int)Math.abs(gd.getNextNumber());
-		fps=Math.abs(gd.getNextNumber());
-		bitRate = (int)Math.abs(gd.getNextNumber())*1024;
-		formatCode = gd.getNextChoiceIndex();
-		codecCode= gd.getNextChoiceIndex();
-		customVEnc = gd.getNextString();
-		progressByStackUpdate = gd.getNextBoolean();
-		DefaultTableModel model = vcodecOptTab == null?null:(DefaultTableModel) vcodecOptTab.getModel();
-		vKeys = null;
-		vOptions = null;
-		if (model!=null) {
-			int row = vcodecOptTab.getEditingRow();
-			int col = vcodecOptTab.getEditingColumn();
-			if (row != -1 && col != -1)
-				vcodecOptTab.getCellEditor(row,col).stopCellEditing();
-			int rowCount = model.getRowCount();
-			if (rowCount>0) {
-				vKeys = new ArrayList<String>(rowCount);
-				vOptions = new ArrayList<String>(rowCount);
-
-				for (int i =0; i< rowCount; i++){
-					if (model.getValueAt(i, 0)!=null && !model.getValueAt(i, 0).toString().isEmpty()) {
-						vKeys.add(model.getValueAt(i, 0).toString());
-						if (model.getValueAt(i, 1)!=null && !model.getValueAt(i, 1).toString().isEmpty())
-							vOptions.add(model.getValueAt(i, 1).toString());
-						else vOptions.add(" ");
-					}
-					
-
-				}
-			}
-
-
-		}
-		
-
-		if (formatCode > 0 && !getFileExtension(filePath).toLowerCase().equals(formats[formatCode])) {
-			filePath = filePath.substring(0, filePath.lastIndexOf(getFileExtension(filePath)))+formats[formatCode];
-			File videofile = new File(filePath);
-			if(videofile.exists()) {
-				GenericDialog rewritedlg = new GenericDialog("File exists");
-				rewritedlg.setCancelLabel("NO");
-				rewritedlg.addMessage("The file with the selected extension ("+formats[formatCode]+") already exists. Overvrite?\n(pressing NO cancels encoding)");
-				rewritedlg.showDialog();
-				if (rewritedlg.wasCanceled()) return false;
-			}
-			else IJ.showMessage("Format warning", "Selected format mismatches file extension.\nExtension is replaced to "+formats[formatCode]);
-		}
-		
-			
-
-		IJ.register(this.getClass());
-		return true;
-	}
 
 	public void displayDialog(boolean displayDialog) {
 		this.displayDialog = displayDialog;
 	}
 	
 
-	@Override
-	public void close() throws java.lang.Exception {
-		if (recorder!=null){
-			
-			try {
-				recorder.close();
-				frameHeightBorder = 0;
-				initialized = false;
-			} catch (FrameRecorder.Exception e) {
-				
-				e.printStackTrace();
-			}
-		}
-		
-	}
+	
 	
 	public double getFrameRate() {
 		return fps;
@@ -665,5 +724,20 @@ public class FFmpeg_FrameRecorder implements AutoCloseable, PlugInFilter {
 		return initialized;
 	}
 
+	@Override
+	public void close() throws Exception {
+		if (recorder!=null){
+			frameHeightBorder = 0;
+			initialized = false;
+			recorder.close();
+			
+		}
+		
+	}
 	
+	@Override
+	protected void finalize() throws Throwable{
+		close();
+		super.finalize();
+	}
 }
